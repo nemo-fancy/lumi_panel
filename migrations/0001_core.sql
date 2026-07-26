@@ -38,8 +38,18 @@ CREATE TABLE users (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    CONSTRAINT ck_users_no_self_invite CHECK (invite_user_id IS DISTINCT FROM id),
-    CONSTRAINT ck_users_balance_sane   CHECK (balance >= 0)
+    -- Balance deliberately carries no >= 0 constraint.
+    --
+    -- Overdraft is already prevented where it matters, by the conditional
+    -- UPDATE ... WHERE balance >= amount RETURNING that every spend goes
+    -- through (§8.5). A CHECK on top of that would not add protection -- it
+    -- would remove a legitimate state: clawing back a commission after the
+    -- freeze period, when the inviter has already withdrawn, must be able to
+    -- drive the balance negative and freeze withdrawals until it is made good
+    -- (§8.6). With the CHECK in place that transaction aborts, and the
+    -- realistic response is to clamp the deduction at zero -- which loses the
+    -- shortfall silently and breaks invariant I5 forever.
+    CONSTRAINT ck_users_no_self_invite CHECK (invite_user_id IS DISTINCT FROM id)
 );
 CREATE INDEX idx_users_invite ON users(invite_user_id) WHERE invite_user_id IS NOT NULL;
 
@@ -117,6 +127,11 @@ CREATE UNIQUE INDEX uq_sub_one_primary ON subscriptions(user_id)
 
 CREATE INDEX idx_sub_user_active ON subscriptions(user_id) WHERE status = 'active';
 CREATE INDEX idx_sub_expiring    ON subscriptions(expired_at) WHERE status = 'active';
+-- Rebuilding group:users:{gid} resolves users -> active subscriptions -> plans
+-- .group_ids. Without this the join seq-scans subscriptions on every
+-- invalidation, which defeats the point of invalidating only the one or two
+-- affected groups (§5.5).
+CREATE INDEX idx_sub_plan         ON subscriptions(plan_id);
 
 -- ===========================================================================
 -- machines and nodes
@@ -183,7 +198,6 @@ CREATE TABLE nodes (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_nodes_groups ON nodes USING GIN(group_ids);
-CREATE INDEX idx_nodes_entry  ON nodes(id) WHERE role = 'entry' AND deleted_at IS NULL;
 
 -- Same machine, same listening port, once. Without this the conflict surfaces
 -- as a node that will not start, long after the configuration was saved.
@@ -241,7 +255,10 @@ CREATE TABLE traffic_ledger (
     up_bytes         BIGINT NOT NULL CHECK (up_bytes >= 0),
     down_bytes       BIGINT NOT NULL CHECK (down_bytes >= 0),
     billed_bytes     BIGINT NOT NULL CHECK (billed_bytes >= 0),
-    rate_bp_snapshot SMALLINT NOT NULL,
+    -- Constrained the same way nodes.rate_bp is. A snapshot of zero or below
+    -- would zero-rate or negate a historical recomputation, and the row would
+    -- look entirely ordinary.
+    rate_bp_snapshot SMALLINT NOT NULL CHECK (rate_bp_snapshot > 0),
     -- When the panel received it, floored to five minutes. Billing and
     -- idempotency key off this.
     bucket_at        TIMESTAMPTZ NOT NULL,
@@ -252,6 +269,94 @@ CREATE TABLE traffic_ledger (
 
 CREATE UNIQUE INDEX uq_ledger
     ON traffic_ledger(user_id, node_id, subscription_id, bucket_at);
+
+-- The hourly rollup and invariant I1 both scan by time, and bucket_at sits
+-- fourth in uq_ledger, so that index cannot serve them. Without this the
+-- rollup seq-scans the live partition -- roughly 4.3 million rows a day at the
+-- capacity §4.4 plans for -- once an hour.
+CREATE INDEX idx_ledger_bucket ON traffic_ledger(bucket_at);
+CREATE INDEX idx_ledger_sub    ON traffic_ledger(subscription_id, bucket_at);
+
+-- ---------------------------------------------------------------------------
+-- Partition management
+-- ---------------------------------------------------------------------------
+-- A range-partitioned table with no partitions rejects every insert:
+--
+--   ERROR: no partition of relation "traffic_ledger" found for row
+--
+-- Which would be survivable if it failed early. It does not: the node has
+-- already been ACKed by then (§5.3), so the traffic is accepted, the node
+-- clears its counter, and the row is then unbillable. Partitions are part of
+-- the schema, not an operational afterthought.
+--
+-- A DEFAULT partition is explicitly not used. It would unblock inserts by
+-- silently absorbing everything, and attaching a real partition afterwards
+-- requires a full scan of the default holding ACCESS EXCLUSIVE -- the exact
+-- lock event §4.5 forbids.
+CREATE OR REPLACE FUNCTION lumi_ensure_ledger_partition(target DATE)
+RETURNS TEXT
+LANGUAGE plpgsql AS $$
+DECLARE
+    start_at DATE := date_trunc('month', target)::DATE;
+    end_at   DATE := (date_trunc('month', target) + INTERVAL '1 month')::DATE;
+    part     TEXT := 'traffic_ledger_p' || to_char(start_at, 'YYYYMM');
+BEGIN
+    IF to_regclass(part) IS NOT NULL THEN
+        RETURN part;
+    END IF;
+    EXECUTE format(
+        'CREATE TABLE %I PARTITION OF traffic_ledger FOR VALUES FROM (%L) TO (%L)',
+        part, start_at, end_at
+    );
+    RETURN part;
+END;
+$$;
+
+COMMENT ON FUNCTION lumi_ensure_ledger_partition(DATE) IS
+    'Idempotent. The scheduler calls it for now and now+7d so a month boundary '
+    'is always crossed with the next partition already in place (§4.4).';
+
+-- Detaches partitions wholly older than the retention window and returns their
+-- names for archival. DETACH, never DROP: §4.4 keeps 35 days online and
+-- archives the rest, and a financial record should not be destroyed by a
+-- routine job.
+CREATE OR REPLACE FUNCTION lumi_detach_expired_ledger_partitions(retain_days INT DEFAULT 35)
+RETURNS SETOF TEXT
+LANGUAGE plpgsql AS $$
+DECLARE
+    cutoff TIMESTAMPTZ := now() - make_interval(days => retain_days);
+    part   RECORD;
+BEGIN
+    FOR part IN
+        -- The upper bound has to be read back out of the catalogue, and
+        -- pg_get_expr is the only way to get at it. It renders a TIMESTAMPTZ
+        -- bound in full -- '2026-08-01 00:00:00+00', not '2026-08-01' -- so
+        -- the capture must take everything up to the closing quote. A
+        -- date-shaped pattern silently matches nothing, which would leave
+        -- every partition in place while the function reports success.
+        SELECT c.relname,
+               (regexp_match(pg_get_expr(c.relpartbound, c.oid), 'TO \(''([^'']+)'''))[1] AS upper_bound
+        FROM pg_class c
+        JOIN pg_inherits i ON i.inhrelid = c.oid
+        WHERE i.inhparent = 'traffic_ledger'::regclass
+    LOOP
+        IF part.upper_bound IS NULL THEN
+            RAISE WARNING 'could not read the upper bound of partition %; leaving it attached', part.relname;
+            CONTINUE;
+        END IF;
+        IF part.upper_bound::TIMESTAMPTZ <= cutoff THEN
+            EXECUTE format('ALTER TABLE traffic_ledger DETACH PARTITION %I', part.relname);
+            RETURN NEXT part.relname;
+        END IF;
+    END LOOP;
+END;
+$$;
+
+-- Bootstrap: the current month and the next one, so a fresh install can take
+-- traffic immediately and survives its first month boundary even if the
+-- scheduler has not been wired up yet.
+SELECT lumi_ensure_ledger_partition(now()::DATE);
+SELECT lumi_ensure_ledger_partition((now() + INTERVAL '1 month')::DATE);
 
 -- The idempotency gate. An additive UPSERT is not idempotent, so replaying the
 -- write-ahead log after a crash would add the same batch a second time. This
@@ -273,6 +378,9 @@ CREATE TABLE traffic_daily (
 
     PRIMARY KEY (user_id, day, node_id)
 );
+-- The primary key leads with user_id, so cross-user reporting over a date
+-- range cannot range-scan it.
+CREATE INDEX idx_traffic_daily_day ON traffic_daily(day);
 
 CREATE TABLE devices (
     user_id     BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

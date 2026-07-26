@@ -54,6 +54,30 @@ jobs:
             GOOS=${target%/*} GOARCH=${target#*/} go build -o /dev/null ./cmd/lumipanel
           done
 
+  schema:
+    runs-on: ubuntu-latest
+    # The Go tests never execute SQL, so nothing else in this pipeline would
+    # notice a migration that parses and then fails on its first insert.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: localhost
+      PGUSER: postgres
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v4
+      - name: install psql
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: apply migrations and verify
+        run: scripts/verify-schema.sh
+
   vulncheck:
     runs-on: ubuntu-latest
     steps:

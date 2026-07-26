@@ -29,7 +29,14 @@ CREATE TABLE orders (
     paid_at         TIMESTAMPTZ,
     cancelled_at    TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    -- The four amounts are only meaningful in relation to each other.
+    -- Constraining each to be non-negative individually still admits an order
+    -- whose payable amount has nothing to do with its price.
+    CONSTRAINT ck_orders_amounts CHECK (
+        payable_amount = amount - discount_amount - balance_amount
+    )
 );
 CREATE INDEX idx_orders_user    ON orders(user_id, created_at DESC);
 CREATE INDEX idx_orders_pending ON orders(created_at) WHERE status = 'pending';
@@ -98,7 +105,11 @@ ALTER TABLE orders ADD CONSTRAINT fk_orders_coupon
 -- discrepancy can be detected but not located.
 CREATE TABLE balance_logs (
     id            BIGSERIAL PRIMARY KEY,
-    user_id       BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- No cascade. This is the reconciliation trail behind invariant I5, and
+    -- deleting a user must not be able to destroy it. Users are anonymised in
+    -- place rather than deleted (§12.7), so the restriction never fires in
+    -- normal operation -- it exists to stop the one path that would.
+    user_id       BIGINT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     delta         BIGINT NOT NULL,
     balance_before BIGINT NOT NULL,
     balance_after  BIGINT NOT NULL,

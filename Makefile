@@ -50,3 +50,9 @@ cross:
 .PHONY: clean
 clean:
 	rm -rf bin coverage.out
+
+# Requires a reachable PostgreSQL 16 and psql. Not part of `check`, because it
+# needs infrastructure; CI runs it as its own job.
+.PHONY: schema
+schema:
+	scripts/verify-schema.sh
