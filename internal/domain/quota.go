@@ -36,8 +36,13 @@ type SubQuota struct {
 	UsedBytes     int64
 	// ExpiredAt nil means "never expires", which is the normal shape for a
 	// data pack.
-	ExpiredAt  *time.Time
-	ResetEpoch int32
+	ExpiredAt *time.Time
+	// LastResetAt is the bucket-aligned instant of the most recent period
+	// rollover, or nil if the subscription has never reset. A flush whose
+	// bucket predates it is written to the ledger but not counted against the
+	// current period (§7.9).
+	LastResetAt *time.Time
+	ResetEpoch  int32
 }
 
 // Available reports the unused allowance, floored at zero. It can legitimately
@@ -74,12 +79,31 @@ type LedgerRow struct {
 // as expensive to diagnose from a support ticket.
 //
 // SortForDeduction sorts in place and returns its argument for chaining.
+// kindRank orders the subscription kinds for deduction.
+//
+// An explicit rank rather than an equality test, so the comparator stays a
+// strict weak ordering even if a value outside the two known kinds ever
+// reaches it. Comparing kinds for inequality alone makes an unknown kind
+// compare equal to both known ones while they compare unequal to each other,
+// which breaks transitivity and lets sort produce an arbitrary result. The
+// database CHECK makes that unreachable today; the comparator should not
+// depend on it.
+func kindRank(k SubKind) int {
+	switch k {
+	case SubDataPack:
+		return 0
+	case SubPrimary:
+		return 1
+	default:
+		return 2
+	}
+}
+
 func SortForDeduction(subs []SubQuota) []SubQuota {
 	sort.SliceStable(subs, func(i, j int) bool {
 		a, b := subs[i], subs[j]
-		if a.Kind != b.Kind {
-			// data_pack drains before primary.
-			return a.Kind == SubDataPack
+		if ra, rb := kindRank(a.Kind), kindRank(b.Kind); ra != rb {
+			return ra < rb
 		}
 		if a.Kind == SubDataPack {
 			switch {
@@ -111,13 +135,31 @@ func SortForDeduction(subs []SubQuota) []SubQuota {
 //
 // A zero or negative billed amount produces no rows at all; writing a zero row
 // would inflate the ledger without conveying anything.
+//
+// At most one row is emitted per subscription ID, even if the input contains
+// the same ID twice. Two rows sharing an ID would collide on uq_ledger, and
+// PostgreSQL refuses an ON CONFLICT DO UPDATE that would touch one row twice
+// -- so the whole flush batch aborts, retries, and aborts again, wedging the
+// Flusher on a batch it can never land.
 func Attribute(billed int64, subs []SubQuota, at time.Time) []LedgerRow {
 	if billed <= 0 {
 		return nil
 	}
 
 	var rows []LedgerRow
+	// index maps a subscription ID to its row, so a repeated ID accumulates
+	// instead of appending.
+	index := make(map[int64]int, len(subs))
 	remaining := billed
+
+	add := func(id, amount int64) {
+		if i, ok := index[id]; ok {
+			rows[i].Billed += amount
+			return
+		}
+		index[id] = len(rows)
+		rows = append(rows, LedgerRow{SubscriptionID: id, Billed: amount})
+	}
 
 	for _, s := range subs {
 		if !s.ActiveAt(at) {
@@ -131,14 +173,15 @@ func Attribute(billed int64, subs []SubQuota, at time.Time) []LedgerRow {
 		if remaining < take {
 			take = remaining
 		}
-		rows = append(rows, LedgerRow{SubscriptionID: s.ID, Billed: take})
+		add(s.ID, take)
 		remaining -= take
 		if remaining == 0 {
 			return rows
 		}
 	}
 
-	return append(rows, LedgerRow{SubscriptionID: OverflowSubscriptionID, Billed: remaining})
+	add(OverflowSubscriptionID, remaining)
+	return rows
 }
 
 // ApplyAttribution deducts attributed amounts back into the ladder slice so the

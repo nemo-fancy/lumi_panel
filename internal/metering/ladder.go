@@ -40,20 +40,82 @@ func NewQuotaLadder() *QuotaLadder {
 	return &QuotaLadder{ladders: make(map[int64][]domain.SubQuota)}
 }
 
-// Set installs a user's subscriptions, sorting them into deduction order.
+// Rebuild installs a user's subscriptions with authoritative counters,
+// replacing whatever was held.
 //
-// Called on hydrate at startup, on the hourly rebuild, and from the
-// subscription-changed event subscriber. The input slice is copied: the caller
-// usually owns rows loaded from the store and must not observe the ladder
-// mutating them.
-func (l *QuotaLadder) Set(userID int64, subs []domain.SubQuota) {
-	cp := make([]domain.SubQuota, len(subs))
-	copy(cp, subs)
-	domain.SortForDeduction(cp)
-
+// This is the hourly job's entry point, and its input must come from a SUM
+// over traffic_ledger -- the one source that is auditable row by row. It is
+// what stops small attribution drift from compounding across days.
+//
+// Startup hydrate also uses it, followed by a replay of any unacknowledged
+// write-ahead log.
+func (l *QuotaLadder) Rebuild(userID int64, subs []domain.SubQuota) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.ladders[userID] = cp
+	l.ladders[userID] = prepare(subs)
+}
+
+// Sync installs a user's subscription set while preserving the counters the
+// ladder already holds for subscriptions it already knew about.
+//
+// This is what the subscription-changed event subscriber calls. Its natural
+// input is the subscriptions table, whose used_bytes column is a rollup that
+// trails by up to an hour -- so overwriting counters from it would roll a
+// user's usage backwards by that much on every plan change or data-pack
+// purchase, handing back an hour of traffic each time. Only Rebuild, fed from
+// the ledger, is entitled to move a counter downward.
+//
+// New subscriptions take the counter they arrive with; ones already present
+// keep the ladder's value and pick up any change to allowance or expiry.
+func (l *QuotaLadder) Sync(userID int64, subs []domain.SubQuota) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	known := make(map[int64]int64, len(l.ladders[userID]))
+	for _, s := range l.ladders[userID] {
+		known[s.ID] = s.UsedBytes
+	}
+
+	next := prepare(subs)
+	for i := range next {
+		if used, ok := known[next[i].ID]; ok {
+			next[i].UsedBytes = used
+		}
+	}
+	l.ladders[userID] = next
+}
+
+// prepare copies, de-duplicates and orders a subscription set.
+//
+// De-duplication is not defensive tidiness. Two entries sharing an ID each
+// contribute their own allowance, so the pair drains past what the
+// subscription actually holds -- landing in exactly the over-quota state
+// invariant I8 alarms on, without any traffic having overrun anything.
+func prepare(subs []domain.SubQuota) []domain.SubQuota {
+	out := make([]domain.SubQuota, 0, len(subs))
+	seen := make(map[int64]bool, len(subs))
+	for _, s := range subs {
+		if seen[s.ID] {
+			continue
+		}
+		seen[s.ID] = true
+		out = append(out, copyQuota(s))
+	}
+	return domain.SortForDeduction(out)
+}
+
+// copyQuota deep-copies the timestamps a SubQuota points at, so a snapshot
+// handed to a caller shares no memory with the ladder.
+func copyQuota(s domain.SubQuota) domain.SubQuota {
+	if s.ExpiredAt != nil {
+		t := *s.ExpiredAt
+		s.ExpiredAt = &t
+	}
+	if s.LastResetAt != nil {
+		t := *s.LastResetAt
+		s.LastResetAt = &t
+	}
+	return s
 }
 
 // Drop removes a user, e.g. once every subscription has expired.
@@ -68,9 +130,12 @@ func (l *QuotaLadder) Drop(userID int64) {
 func (l *QuotaLadder) Snapshot(userID int64) []domain.SubQuota {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
+
 	subs := l.ladders[userID]
 	cp := make([]domain.SubQuota, len(subs))
-	copy(cp, subs)
+	for i, s := range subs {
+		cp[i] = copyQuota(s)
+	}
 	return cp
 }
 
@@ -88,6 +153,11 @@ func (l *QuotaLadder) Users() []int64 {
 // Attribute splits a billed amount across a user's subscriptions and deducts
 // the result from the ladder in one atomic step.
 //
+// bucketAt is the five-minute bucket the traffic belongs to. It decides three
+// things at once: which subscriptions were live, which ledger rows are
+// written, and -- via the reset epoch -- which of those rows count against the
+// current period.
+//
 // Splitting and deducting cannot be separated. Two flush batches for the same
 // user attributing against the same pre-deduction balance would each believe
 // the allowance was available, and the overage would never reach the
@@ -96,7 +166,7 @@ func (l *QuotaLadder) Users() []int64 {
 // A user with no ladder entry attributes entirely to overflow rather than
 // silently vanishing: unattributed traffic is a fact worth recording, and
 // arriving here means hydrate missed somebody.
-func (l *QuotaLadder) Attribute(userID int64, billed int64, at time.Time) []domain.LedgerRow {
+func (l *QuotaLadder) Attribute(userID int64, billed int64, bucketAt time.Time) []domain.LedgerRow {
 	if billed <= 0 {
 		return nil
 	}
@@ -109,17 +179,31 @@ func (l *QuotaLadder) Attribute(userID int64, billed int64, at time.Time) []doma
 		return []domain.LedgerRow{{SubscriptionID: domain.OverflowSubscriptionID, Billed: billed}}
 	}
 
-	rows := domain.Attribute(billed, subs, at)
-	domain.ApplyAttribution(subs, rows)
+	rows := domain.Attribute(billed, subs, bucketAt)
+
+	// A batch that was in flight when a reset landed carries a bucket from
+	// before the reset instant. Its ledger rows are still written -- the
+	// historical record has to stay complete -- but they must not consume the
+	// fresh allowance, which the user has not touched yet (§7.9).
+	for _, r := range rows {
+		if r.SubscriptionID == domain.OverflowSubscriptionID {
+			continue
+		}
+		for i := range subs {
+			if subs[i].ID != r.SubscriptionID {
+				continue
+			}
+			if domain.CountsTowardCurrentPeriod(bucketAt, subs[i].LastResetAt) {
+				subs[i].UsedBytes += r.Billed
+			}
+			break
+		}
+	}
 	return rows
 }
 
-// Reconcile overwrites a subscription's counter with an authoritative value.
-//
-// The hourly job recomputes each counter as a SUM over traffic_ledger and
-// pushes it here, which is what stops small attribution drift from compounding
-// over days. The ledger wins by definition: it is the only record a human can
-// audit row by row.
+// Reconcile overwrites a single subscription's counter with an authoritative
+// value from the ledger.
 func (l *QuotaLadder) Reconcile(userID, subscriptionID, usedBytes int64) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -134,22 +218,24 @@ func (l *QuotaLadder) Reconcile(userID, subscriptionID, usedBytes int64) bool {
 	return false
 }
 
-// Reset applies a period rollover: the counter returns to zero and the epoch
-// advances.
+// Reset applies a period rollover: the counter returns to zero, the epoch
+// advances, and the reset instant is recorded.
 //
-// The epoch is what protects an in-flight flush. A batch that was already on
-// its way when the reset landed carries an older bucket timestamp; it is still
-// written to the ledger, because the historical record must stay complete, but
-// it is not counted against the fresh allowance (§7.9).
-func (l *QuotaLadder) Reset(userID, subscriptionID int64, epoch int32) bool {
+// resetAt is what later flushes compare their bucket against, so it must be
+// the same bucket-aligned instant written to subscriptions.last_reset_at. A
+// reset that did not land on a bucket boundary would leave one bucket
+// straddling it, with no way to split the traffic inside.
+func (l *QuotaLadder) Reset(userID, subscriptionID int64, epoch int32, resetAt time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	subs := l.ladders[userID]
 	for i := range subs {
 		if subs[i].ID == subscriptionID {
+			aligned := domain.AlignBucket(resetAt)
 			subs[i].UsedBytes = 0
 			subs[i].ResetEpoch = epoch
+			subs[i].LastResetAt = &aligned
 			return true
 		}
 	}

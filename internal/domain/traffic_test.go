@@ -106,3 +106,61 @@ func TestValidateDelta(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateDeltaRejectsOverflowingReports covers the inputs that make the
+// billing arithmetic wrap.
+//
+// Reports come from nodes, which are semi-trusted and may simply be running a
+// buggy build. Wrapping negative makes BilledBytes return a negative amount
+// that Attribute discards silently -- traffic disappears with no ledger row,
+// no overflow row and no error, so no invariant ever sees it. Wrapping
+// positive bills petabytes on a row that looks entirely ordinary.
+func TestValidateDeltaRejectsOverflowingReports(t *testing.T) {
+	overflowing := []struct {
+		name     string
+		up, down int64
+	}{
+		{"single direction past the cap", 1e17, 0},
+		{"both directions at the int64 ceiling", 5e18, 5e18},
+		{"a value that wraps to zero", 184467440737095517, 0},
+		{"a sum that exceeds the cap", MaxReportBytes, MaxReportBytes},
+	}
+
+	for _, tc := range overflowing {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidateDelta(tc.up, tc.down, 100); !errors.Is(err, ErrImplausibleDelta) {
+				t.Fatalf("ValidateDelta(%d, %d) = %v, want ErrImplausibleDelta", tc.up, tc.down, err)
+			}
+		})
+	}
+}
+
+// TestBilledBytesCannotOverflowValidatedInput is the property the cap exists
+// for: anything ValidateDelta accepts, at any legal rate, stays positive and
+// exact.
+func TestBilledBytesCannotOverflowValidatedInput(t *testing.T) {
+	const maxRate = RateBP(32767)
+
+	for _, up := range []int64{0, 1, 1 << 20, MaxReportBytes / 2, MaxReportBytes} {
+		down := MaxReportBytes - up
+		if err := ValidateDelta(up, down, maxRate); err != nil {
+			t.Fatalf("ValidateDelta(%d, %d) rejected a boundary case: %v", up, down, err)
+		}
+		got := BilledBytes(up, down, maxRate)
+		if got < 0 {
+			t.Fatalf("BilledBytes(%d, %d, %d) overflowed to %d", up, down, maxRate, got)
+		}
+		if want := MaxReportBytes / 100 * int64(maxRate); got < want {
+			t.Fatalf("BilledBytes(%d, %d, %d) = %d, implausibly small", up, down, maxRate, got)
+		}
+	}
+}
+
+// TestMaxReportBytesLeavesHeadroom pins the arithmetic behind the constant, so
+// raising it later fails here rather than in production.
+func TestMaxReportBytesLeavesHeadroom(t *testing.T) {
+	const maxInt64 = int64(^uint64(0) >> 1)
+	if MaxReportBytes > maxInt64/32767 {
+		t.Fatalf("MaxReportBytes (%d) times the largest rate exceeds int64", MaxReportBytes)
+	}
+}

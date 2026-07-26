@@ -25,6 +25,26 @@ var ErrNegativeDelta = errors.New("domain: traffic delta must not be negative")
 // rate would make traffic free without leaving any trace of the decision.
 var ErrInvalidRate = errors.New("domain: rate_bp must be positive")
 
+// ErrImplausibleDelta is returned for a report large enough to threaten the
+// billing arithmetic.
+var ErrImplausibleDelta = errors.New("domain: traffic delta exceeds the plausible maximum")
+
+// MaxReportBytes bounds a single reported direction.
+//
+// 2^47 is 140 TB: a five-minute bucket at 3.7 Tbps, or a fortnight of a
+// saturated gigabit link accumulated across a long outage. Nothing legitimate
+// reaches it.
+//
+// The bound exists because multiplying by the largest int16 rate must not
+// overflow: 2^48 total bytes times 32767 is 9.2e15 short of int64's ceiling.
+// Without it a node -- which is only semi-trusted, and may simply be running
+// a buggy build -- can pick a value that wraps. Wrapping negative makes
+// BilledBytes return a negative amount, which Attribute discards silently:
+// the traffic disappears with no ledger row, no overflow row and no error, so
+// no invariant ever sees it. Wrapping positive bills a user petabytes on a row
+// that looks entirely ordinary.
+const MaxReportBytes int64 = 1 << 47
+
 // Valid reports whether r is a usable multiplier.
 func (r RateBP) Valid() bool { return r > 0 }
 
@@ -34,6 +54,11 @@ func (r RateBP) Valid() bool { return r > 0 }
 func ValidateDelta(up, down int64, rate RateBP) error {
 	if up < 0 || down < 0 {
 		return ErrNegativeDelta
+	}
+	// Each direction is bounded before they are added, so the sum itself
+	// cannot overflow on the way to being checked.
+	if up > MaxReportBytes || down > MaxReportBytes || up+down > MaxReportBytes {
+		return ErrImplausibleDelta
 	}
 	if !rate.Valid() {
 		return ErrInvalidRate
@@ -47,11 +72,10 @@ func ValidateDelta(up, down int64, rate RateBP) error {
 // of the published billing terms (§C-4) and must not be changed without
 // changing that document too.
 //
-// Overflow: (up+down) tops out around 1e12 for a single 5-minute bucket, and
-// multiplying by the maximum int16 rate (32767) stays under 3.3e16 -- well
-// inside int64's 9.2e18.
-//
-// Inputs are assumed already checked by ValidateDelta.
+// Inputs must already have passed ValidateDelta, which is what makes the
+// arithmetic overflow-free: it caps up+down at MaxReportBytes, so the product
+// with the largest possible rate stays inside int64. Calling this on
+// unvalidated input is a bug, and a silent one.
 func BilledBytes(up, down int64, rate RateBP) int64 {
 	return (up + down) * int64(rate) / int64(RateBPUnit)
 }

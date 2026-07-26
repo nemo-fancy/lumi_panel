@@ -1,75 +1,364 @@
 [
-  {"ua": "clash-verge/v1.5.11", "profile": "mihomo", "note": "Clash Verge Rev, hyphenated spelling"},
-  {"ua": "clash-verge/v2.0.3", "profile": "mihomo"},
-  {"ua": "Clash Verge Rev/2.1.2", "profile": "mihomo", "note": "spaced spelling ships too"},
-  {"ua": "clash.meta/v1.16.0", "profile": "mihomo"},
-  {"ua": "Clash.Meta/1.17.0", "profile": "mihomo"},
-  {"ua": "mihomo/1.18.1", "profile": "mihomo"},
-  {"ua": "mihomo/1.19.0 (linux; amd64)", "profile": "mihomo"},
-  {"ua": "FlClash/0.8.60", "profile": "mihomo", "note": "contains 'clash'; must not fall to the Premium floor"},
-  {"ua": "FlClash/0.8.72 (android)", "profile": "mihomo"},
-  {"ua": "Nikki/1.0.2", "profile": "mihomo"},
-  {"ua": "ClashMetaForAndroid/2.10.1.Meta", "profile": "mihomo"},
-  {"ua": "CMFA/2.11.0", "profile": "mihomo"},
-  {"ua": "ClashX Meta/1.4.7", "profile": "mihomo"},
-  {"ua": "Stash/2.5.3 Clash/1.9.0", "profile": "mihomo", "note": "stash rule must beat the bare clash rule"},
-  {"ua": "Stash/3.0.0", "profile": "mihomo"},
-  {"ua": "Stash/2.9.1 (iOS 17.4)", "profile": "mihomo"},
-
-  {"ua": "sing-box/1.8.0", "profile": "singbox"},
-  {"ua": "sing-box 1.11.4", "profile": "singbox"},
-  {"ua": "sing-box/1.12.0 (darwin arm64)", "profile": "singbox"},
-  {"ua": "SFA/1.8.0 (Android)", "profile": "singbox"},
-  {"ua": "SFI/1.9.0 (iOS)", "profile": "singbox"},
-  {"ua": "SFM/1.10.2 (macOS)", "profile": "singbox"},
-  {"ua": "Hiddify/2.0.5", "profile": "singbox"},
-  {"ua": "HiddifyNext/2.5.7", "profile": "singbox"},
-  {"ua": "Karing/1.0.10", "profile": "singbox"},
-  {"ua": "karing/1.1.2 (windows)", "profile": "singbox"},
-
-  {"ua": "ClashforWindows/0.20.39", "profile": "clash_premium"},
-  {"ua": "Clash/1.11.0", "profile": "clash_premium"},
-  {"ua": "clash/premium-2023.08.17", "profile": "clash_premium"},
-  {"ua": "ClashX/1.72.0", "profile": "clash_premium"},
-  {"ua": "ClashX Pro/1.98.0", "profile": "clash_premium", "note": "Pro ships the Premium core, not mihomo -- see detect.go"},
-  {"ua": "ClashforAndroid/2.5.12.premium", "profile": "clash_premium"},
-  {"ua": "CFA/2.5.12", "profile": "clash_premium"},
-  {"ua": "OpenClash/0.46.021", "profile": "clash_premium", "note": "core depends on the installed binary; conservative floor"},
-  {"ua": "Clash-Premium/2023.08.17", "profile": "clash_premium"},
-
-  {"ua": "v2rayN/6.31", "profile": "base64"},
-  {"ua": "v2rayN/7.0.1", "profile": "base64"},
-  {"ua": "v2rayNG/1.8.16", "profile": "base64"},
-  {"ua": "v2rayNG/1.9.5 (Android 14)", "profile": "base64"},
-  {"ua": "Shadowrocket/2.2.35 (iPhone; iOS 17.4)", "profile": "base64"},
-  {"ua": "Shadowrocket/1993 CFNetwork/1494.0.7", "profile": "base64"},
-  {"ua": "NekoBox/1.2.9", "profile": "base64"},
-  {"ua": "NekoRay/3.26", "profile": "base64"},
-  {"ua": "Throne/1.0.4", "profile": "base64"},
-
-  {"ua": "", "profile": "base64", "unknown": true, "note": "empty UA is common behind proxies and CDNs"},
-  {"ua": "curl/8.5.0", "profile": "base64", "unknown": true},
-  {"ua": "Wget/1.21.4", "profile": "base64", "unknown": true},
-  {"ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36", "profile": "base64", "unknown": true, "note": "user pasted the link into a browser"},
-  {"ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15", "profile": "base64", "unknown": true},
-  {"ua": "Egern/2.4.1", "profile": "base64", "unknown": true, "note": "long tail; a renderer is earned via unknown_clients counts"},
-  {"ua": "Loon/3.2.1", "profile": "base64", "unknown": true},
-  {"ua": "Surge iOS/2800", "profile": "base64", "unknown": true},
-  {"ua": "Surge Mac/1900", "profile": "base64", "unknown": true},
-  {"ua": "Quantumult%20X/1.0.30", "profile": "base64", "unknown": true},
-  {"ua": "Quantumult/2.1.2", "profile": "base64", "unknown": true},
-  {"ua": "Choc/1.0", "profile": "base64", "unknown": true},
-  {"ua": "Pharos/1.2", "profile": "base64", "unknown": true},
-  {"ua": "Go-http-client/2.0", "profile": "base64", "unknown": true},
-  {"ua": "python-requests/2.31.0", "profile": "base64", "unknown": true},
-  {"ua": "PostmanRuntime/7.36.0", "profile": "base64", "unknown": true},
-  {"ua": "okhttp/4.12.0", "profile": "base64", "unknown": true},
-  {"ua": "Dart/3.2 (dart:io)", "profile": "base64", "unknown": true},
-  {"ua": "Lumi/1.0.0", "profile": "base64", "unknown": true, "note": "the native client gets its own profile once LSF lands in v1.1"},
-
-  {"ua": "CLASH-VERGE/V1.5.11", "profile": "mihomo", "note": "matching is case-insensitive"},
-  {"ua": "MIHOMO/1.18.1", "profile": "mihomo"},
-  {"ua": "SHADOWROCKET/2.2.35", "profile": "base64"},
-  {"ua": "sing-BOX/1.9.0", "profile": "singbox"},
-  {"ua": "  clash-verge/v1.5.11  ", "profile": "mihomo", "note": "surrounding whitespace must not matter"}
+  {
+    "ua": "clash-verge/v1.5.11",
+    "profile": "mihomo",
+    "note": "Clash Verge Rev, hyphenated spelling"
+  },
+  {
+    "ua": "clash-verge/v2.0.3",
+    "profile": "mihomo"
+  },
+  {
+    "ua": "Clash Verge Rev/2.1.2",
+    "profile": "mihomo",
+    "note": "spaced spelling ships too"
+  },
+  {
+    "ua": "clash.meta/v1.16.0",
+    "profile": "mihomo",
+    "version": "1.16.0"
+  },
+  {
+    "ua": "Clash.Meta/1.17.0",
+    "profile": "mihomo",
+    "version": "1.17.0"
+  },
+  {
+    "ua": "mihomo/1.18.1",
+    "profile": "mihomo",
+    "version": "1.18.1"
+  },
+  {
+    "ua": "mihomo/1.19.0 (linux; amd64)",
+    "profile": "mihomo",
+    "version": "1.19.0"
+  },
+  {
+    "ua": "FlClash/0.8.60",
+    "profile": "mihomo",
+    "note": "contains 'clash'; must not fall to the Premium floor"
+  },
+  {
+    "ua": "FlClash/0.8.72 (android)",
+    "profile": "mihomo"
+  },
+  {
+    "ua": "Nikki/1.0.2",
+    "profile": "mihomo"
+  },
+  {
+    "ua": "ClashMetaForAndroid/2.10.1.Meta",
+    "profile": "mihomo"
+  },
+  {
+    "ua": "CMFA/2.11.0",
+    "profile": "mihomo"
+  },
+  {
+    "ua": "ClashX Meta/1.4.7",
+    "profile": "mihomo"
+  },
+  {
+    "ua": "Stash/2.5.3 Clash/1.9.0",
+    "profile": "mihomo",
+    "note": "stash rule must beat the bare clash rule"
+  },
+  {
+    "ua": "Stash/3.0.0",
+    "profile": "mihomo"
+  },
+  {
+    "ua": "Stash/2.9.1 (iOS 17.4)",
+    "profile": "mihomo"
+  },
+  {
+    "ua": "sing-box/1.8.0",
+    "profile": "singbox",
+    "version": "1.8.0"
+  },
+  {
+    "ua": "sing-box 1.11.4",
+    "profile": "singbox",
+    "version": "1.11.4"
+  },
+  {
+    "ua": "sing-box/1.12.0 (darwin arm64)",
+    "profile": "singbox",
+    "version": "1.12.0"
+  },
+  {
+    "ua": "SFA/1.8.0 (Android)",
+    "profile": "singbox",
+    "version": "1.8.0"
+  },
+  {
+    "ua": "SFI/1.9.0 (iOS)",
+    "profile": "singbox",
+    "version": "1.9.0"
+  },
+  {
+    "ua": "SFM/1.10.2 (macOS)",
+    "profile": "singbox",
+    "version": "1.10.2"
+  },
+  {
+    "ua": "Hiddify/2.0.5",
+    "profile": "singbox"
+  },
+  {
+    "ua": "HiddifyNext/2.5.7",
+    "profile": "singbox"
+  },
+  {
+    "ua": "Karing/1.0.10",
+    "profile": "singbox"
+  },
+  {
+    "ua": "karing/1.1.2 (windows)",
+    "profile": "singbox"
+  },
+  {
+    "ua": "ClashforWindows/0.20.39",
+    "profile": "clash_premium"
+  },
+  {
+    "ua": "Clash/1.11.0",
+    "profile": "clash_premium"
+  },
+  {
+    "ua": "clash/premium-2023.08.17",
+    "profile": "clash_premium"
+  },
+  {
+    "ua": "ClashX/1.72.0",
+    "profile": "clash_premium"
+  },
+  {
+    "ua": "ClashX Pro/1.98.0",
+    "profile": "clash_premium",
+    "note": "Pro ships the Premium core, not mihomo -- see detect.go"
+  },
+  {
+    "ua": "ClashforAndroid/2.5.12.premium",
+    "profile": "clash_premium"
+  },
+  {
+    "ua": "CFA/2.5.12",
+    "profile": "clash_premium"
+  },
+  {
+    "ua": "OpenClash/0.46.021",
+    "profile": "clash_premium",
+    "note": "core depends on the installed binary; conservative floor"
+  },
+  {
+    "ua": "Clash-Premium/2023.08.17",
+    "profile": "clash_premium"
+  },
+  {
+    "ua": "v2rayN/6.31",
+    "profile": "base64"
+  },
+  {
+    "ua": "v2rayN/7.0.1",
+    "profile": "base64"
+  },
+  {
+    "ua": "v2rayNG/1.8.16",
+    "profile": "base64"
+  },
+  {
+    "ua": "v2rayNG/1.9.5 (Android 14)",
+    "profile": "base64"
+  },
+  {
+    "ua": "Shadowrocket/2.2.35 (iPhone; iOS 17.4)",
+    "profile": "base64"
+  },
+  {
+    "ua": "Shadowrocket/1993 CFNetwork/1494.0.7",
+    "profile": "base64"
+  },
+  {
+    "ua": "NekoBox/1.2.9",
+    "profile": "base64"
+  },
+  {
+    "ua": "NekoRay/3.26",
+    "profile": "base64"
+  },
+  {
+    "ua": "Throne/1.0.4",
+    "profile": "base64"
+  },
+  {
+    "ua": "",
+    "profile": "base64",
+    "unknown": true,
+    "note": "empty UA is common behind proxies and CDNs"
+  },
+  {
+    "ua": "curl/8.5.0",
+    "profile": "base64",
+    "unknown": true
+  },
+  {
+    "ua": "Wget/1.21.4",
+    "profile": "base64",
+    "unknown": true
+  },
+  {
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "profile": "base64",
+    "unknown": true,
+    "note": "user pasted the link into a browser"
+  },
+  {
+    "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15",
+    "profile": "base64",
+    "unknown": true
+  },
+  {
+    "ua": "Egern/2.4.1",
+    "profile": "base64",
+    "unknown": true,
+    "note": "long tail; a renderer is earned via unknown_clients counts"
+  },
+  {
+    "ua": "Loon/3.2.1",
+    "profile": "base64",
+    "unknown": true
+  },
+  {
+    "ua": "Surge iOS/2800",
+    "profile": "base64",
+    "unknown": true
+  },
+  {
+    "ua": "Surge Mac/1900",
+    "profile": "base64",
+    "unknown": true
+  },
+  {
+    "ua": "Quantumult%20X/1.0.30",
+    "profile": "base64",
+    "unknown": true
+  },
+  {
+    "ua": "Quantumult/2.1.2",
+    "profile": "base64",
+    "unknown": true
+  },
+  {
+    "ua": "Choc/1.0",
+    "profile": "base64",
+    "unknown": true
+  },
+  {
+    "ua": "Pharos/1.2",
+    "profile": "base64",
+    "unknown": true
+  },
+  {
+    "ua": "Go-http-client/2.0",
+    "profile": "base64",
+    "unknown": true
+  },
+  {
+    "ua": "python-requests/2.31.0",
+    "profile": "base64",
+    "unknown": true
+  },
+  {
+    "ua": "PostmanRuntime/7.36.0",
+    "profile": "base64",
+    "unknown": true
+  },
+  {
+    "ua": "okhttp/4.12.0",
+    "profile": "base64",
+    "unknown": true
+  },
+  {
+    "ua": "Dart/3.2 (dart:io)",
+    "profile": "base64",
+    "unknown": true
+  },
+  {
+    "ua": "Lumi/1.0.0",
+    "profile": "base64",
+    "unknown": true,
+    "note": "the native client gets its own profile once LSF lands in v1.1"
+  },
+  {
+    "ua": "CLASH-VERGE/V1.5.11",
+    "profile": "mihomo",
+    "note": "matching is case-insensitive"
+  },
+  {
+    "ua": "MIHOMO/1.18.1",
+    "profile": "mihomo",
+    "version": "1.18.1"
+  },
+  {
+    "ua": "SHADOWROCKET/2.2.35",
+    "profile": "base64"
+  },
+  {
+    "ua": "sing-BOX/1.9.0",
+    "profile": "singbox",
+    "version": "1.9.0"
+  },
+  {
+    "ua": "  clash-verge/v1.5.11  ",
+    "profile": "mihomo",
+    "note": "surrounding whitespace must not matter"
+  },
+  {
+    "ua": "Instashare/2.0",
+    "profile": "base64",
+    "unknown": true,
+    "note": "a real file-transfer app; substring 'stash' must not claim it"
+  },
+  {
+    "ua": "Mustash/1.0",
+    "profile": "base64",
+    "unknown": true
+  },
+  {
+    "ua": "HiddifyClash/0.15.0",
+    "profile": "clash_premium",
+    "note": "Hiddify has shipped Clash-core builds; engine must beat vendor"
+  },
+  {
+    "ua": "Hiddify Clash/1.2.3",
+    "profile": "clash_premium"
+  },
+  {
+    "ua": "SFA 1.11.0",
+    "profile": "singbox",
+    "version": "1.11.0",
+    "note": "space-separated version"
+  },
+  {
+    "ua": "sing-box/1.12.3",
+    "profile": "singbox",
+    "version": "1.12.3"
+  },
+  {
+    "ua": "mihomo/1.19.4",
+    "profile": "mihomo",
+    "version": "1.19.4"
+  },
+  {
+    "ua": "clash.meta/v1.14.2",
+    "profile": "mihomo",
+    "version": "1.14.2",
+    "note": "predates Hysteria2 in Clash.Meta"
+  },
+  {
+    "ua": "Clash Nyanpasu/1.5.1",
+    "profile": "clash_premium",
+    "note": "conservative floor; revisit if usage warrants a rule"
+  }
 ]

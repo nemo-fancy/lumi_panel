@@ -124,6 +124,31 @@ milliseconds.
 
 ---
 
+## Implementation status
+
+Honest accounting, because items 1–2 are the load-bearing half and only one of
+them exists:
+
+| Item | State |
+|---|---|
+| 1 · hop table replaces `parent_id` | Done — `node_relay_hops` in `0001_core.sql` |
+| 2 · `nodes.role` column | Done |
+| 2 · ingest rejects non-entry reports | **Not built** — `internal/nodeplane` is empty |
+| 3 · relay cost via `rate_bp` | Convention only; nothing enforces it yet |
+| 4 · landing cost in `machines.monthly_cost` | Column exists |
+| I9 · no ledger row references a non-entry node | **Not built** — no invariant checker yet |
+
+So today `role` defaults to `entry` and nothing prevents the exact
+double-billing configuration described above. The columns are in place; the
+guarantee is not. Both gaps close in M1 and M2, and each needs a TODO at the
+ingest entry point rather than only a sentence here.
+
+`ck_relay_no_self` blocks a one-hop cycle and nothing longer. A→B, B→A is
+unconstrained, and a CHECK cannot see across rows — cycle detection belongs in
+the service layer that writes the chain, alongside a depth limit.
+
+---
+
 **Requested action:** confirm items 1–4, or reject with the billing basis you
-want instead. Everything already implemented follows this proposal; reversing
-it is cheap now and expensive after M1.
+want instead. The schema already follows this proposal; reversing it is cheap
+now and expensive after M1.

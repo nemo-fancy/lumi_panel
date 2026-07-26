@@ -2,6 +2,7 @@ package subplane
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,6 +11,7 @@ import (
 type fixture struct {
 	UA      string  `json:"ua"`
 	Profile Profile `json:"profile"`
+	Version string  `json:"version"`
 	Unknown bool    `json:"unknown"`
 	Note    string  `json:"note"`
 }
@@ -39,14 +41,28 @@ func TestUAFixtures(t *testing.T) {
 	for _, f := range fs {
 		t.Run(f.UA, func(t *testing.T) {
 			got, matched := DetectUA(f.UA)
-			if got != f.Profile {
-				t.Errorf("DetectUA(%q) = %q, want %q (%s)", f.UA, got, f.Profile, f.Note)
+			if got.Profile != f.Profile {
+				t.Errorf("DetectUA(%q) = %q, want %q (%s)", f.UA, got.Profile, f.Profile, f.Note)
 			}
 			if matched == f.Unknown {
 				t.Errorf("DetectUA(%q) matched = %v, want %v", f.UA, matched, !f.Unknown)
 			}
+			if want := f.Version; want != "" && versionString(got.Version) != want {
+				t.Errorf("DetectUA(%q) version = %s, want %s", f.UA, versionString(got.Version), want)
+			}
+			// A wrapper application's version is its own, not the core's, so
+			// it must be reported as unknown rather than compared against a
+			// core release requirement.
+			if f.Version == "" && !f.Unknown && !got.Version.IsZero() {
+				t.Errorf("DetectUA(%q) reported core version %s; this client's UA does not carry one",
+					f.UA, versionString(got.Version))
+			}
 		})
 	}
+}
+
+func versionString(v Version) string {
+	return fmt.Sprintf("%d.%d.%d", v.Major, v.Minor, v.Patch)
 }
 
 // TestDetectIsDeterministic pins the property that motivated using an ordered
@@ -58,7 +74,7 @@ func TestDetectIsDeterministic(t *testing.T) {
 	want, _ := DetectUA(ambiguous)
 	for i := 0; i < 1000; i++ {
 		if got, _ := DetectUA(ambiguous); got != want {
-			t.Fatalf("iteration %d returned %q, first call returned %q", i, got, want)
+			t.Fatalf("iteration %d returned %+v, first call returned %+v", i, got, want)
 		}
 	}
 }
@@ -69,11 +85,11 @@ func TestDetectIsDeterministic(t *testing.T) {
 // handles all of them.
 func TestFlClashIsNotDemoted(t *testing.T) {
 	got, matched := DetectUA("FlClash/0.8.60")
-	if !matched || got != ProfileMihomo {
-		t.Fatalf("FlClash detected as %q (matched=%v), want mihomo", got, matched)
+	if !matched || got.Profile != ProfileMihomo {
+		t.Fatalf("FlClash detected as %q (matched=%v), want mihomo", got.Profile, matched)
 	}
-	if !Supports(got, ProtoHysteria2) {
-		t.Fatal("FlClash resolved to a profile that cannot parse Hysteria2")
+	if !Supports(got, ProtoVLESS) {
+		t.Fatal("FlClash resolved to a profile that cannot parse VLESS")
 	}
 }
 
@@ -125,9 +141,9 @@ func TestResolvePrecedence(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := Resolve(tc.req)
-			if got.Profile != tc.wantProf || got.Source != tc.wantSource {
+			if got.Client.Profile != tc.wantProf || got.Source != tc.wantSource {
 				t.Errorf("Resolve() = {%q, %q}, want {%q, %q}",
-					got.Profile, got.Source, tc.wantProf, tc.wantSource)
+					got.Client.Profile, got.Source, tc.wantProf, tc.wantSource)
 			}
 		})
 	}
@@ -146,5 +162,108 @@ func TestUnknownUAIsRecordable(t *testing.T) {
 	got = Resolve(Request{UserAgent: "mihomo/1.18.0"})
 	if got.UnknownUA {
 		t.Error("a matched UA was flagged as unknown")
+	}
+}
+
+// TestOrdinaryWordsDoNotClaimClients covers the false-positive direction.
+//
+// Plain substring matching on "stash" classifies Instashare -- a real,
+// shipping file-transfer app -- as a mihomo client, which hands it YAML it
+// cannot parse at all. That is not "a few nodes missing"; it is an empty node
+// list, the outcome §6.1 names as the worst one available. The same applies to
+// "nikki" and "throne", which are ordinary words, and to the three-letter
+// sing-box abbreviations.
+func TestOrdinaryWordsDoNotClaimClients(t *testing.T) {
+	notClients := []string{
+		"Instashare/2.0",
+		"Mustash/1.0",
+		"stashify/3.1",
+		"Nikkico/2.0",
+		"Enthroned/1.0",
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+	}
+
+	for _, ua := range notClients {
+		t.Run(ua, func(t *testing.T) {
+			if got, matched := DetectUA(ua); matched {
+				t.Errorf("claimed by the %s rule set; it is not a proxy client", got.Profile)
+			}
+		})
+	}
+}
+
+// TestEngineBeatsVendor covers the Hiddify case. Hiddify has shipped
+// Clash-core builds alongside its sing-box ones, and a rule set keyed on
+// vendor rather than engine hands a Clash core sing-box JSON -- unparseable.
+func TestEngineBeatsVendor(t *testing.T) {
+	tests := map[string]Profile{
+		"HiddifyClash/0.15.0": ProfileClashPremium,
+		"Hiddify Clash/1.2.3": ProfileClashPremium,
+		"Hiddify/2.0.5":       ProfileSingBox,
+		"HiddifyNext/2.5.7":   ProfileSingBox,
+	}
+
+	for ua, want := range tests {
+		if got, _ := DetectUA(ua); got.Profile != want {
+			t.Errorf("DetectUA(%q) = %q, want %q", ua, got.Profile, want)
+		}
+	}
+}
+
+// TestWrapperVersionsAreNotCoreVersions pins the distinction the version gate
+// depends on. ClashMetaForAndroid 2.11 embeds mihomo 1.18-something, so
+// comparing the app version against a core release requirement gives an answer
+// that is confidently wrong in whichever direction the numbers fall.
+func TestWrapperVersionsAreNotCoreVersions(t *testing.T) {
+	wrappers := []string{"CMFA/2.11.0", "FlClash/0.8.60", "Karing/1.0.10", "Hiddify/2.0.5", "Stash/3.0.0"}
+
+	for _, ua := range wrappers {
+		got, matched := DetectUA(ua)
+		if !matched {
+			t.Fatalf("DetectUA(%q) did not match", ua)
+		}
+		if !got.Version.IsZero() {
+			t.Errorf("DetectUA(%q) reported core version %+v; the UA carries only the app version", ua, got.Version)
+		}
+	}
+}
+
+func TestParseVersion(t *testing.T) {
+	tests := map[string]Version{
+		"mihomo/1.18.1":            {1, 18, 1},
+		"sing-box 1.11.4":          {1, 11, 4},
+		"clash.meta/v1.16.0":       {1, 16, 0},
+		"sfa/1.8.0 (android)":      {1, 8, 0},
+		"stash/2.5.3 clash/1.9.0":  {2, 5, 3},
+		"sing-box/1.12.0 (darwin)": {1, 12, 0},
+		"mihomo":                   {},
+		"v2rayn":                   {},
+	}
+
+	for ua, want := range tests {
+		if got := parseVersion(ua); got != want {
+			t.Errorf("parseVersion(%q) = %+v, want %+v", ua, got, want)
+		}
+	}
+}
+
+func TestVersionOrdering(t *testing.T) {
+	if !(Version{1, 11, 4}).Less(Version{1, 12, 0}) {
+		t.Error("1.11.4 should order before 1.12.0")
+	}
+	if (Version{1, 12, 0}).Less(Version{1, 11, 4}) {
+		t.Error("1.12.0 should not order before 1.11.4")
+	}
+	if !(Version{2, 0, 0}).AtLeast(Version{1, 19, 0}) {
+		t.Error("2.0.0 should satisfy a 1.19 minimum")
+	}
+	// An unknown version satisfies nothing. Assuming the newest build is the
+	// failure this whole layer exists to avoid.
+	if (Version{}).AtLeast(Version{1, 12, 0}) {
+		t.Error("an unknown version claimed to satisfy a minimum")
+	}
+	if !(Version{}).IsZero() {
+		t.Error("the zero Version does not report itself unknown")
 	}
 }

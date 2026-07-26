@@ -97,8 +97,8 @@ BEGIN
 END $$;
 
 -- Order amounts must add up.
-INSERT INTO plans (name, kind, transfer_bytes, period_days, prices, reset_policy)
-VALUES ('verify', 'primary', 1, 30, '{"month":990}', 'monthly_1st');
+INSERT INTO plans (name, kind, transfer_bytes, prices, reset_policy)
+VALUES ('verify', 'primary', 1, '{"month":990}', 'monthly_1st');
 DO $$
 DECLARE uid BIGINT; pid BIGINT;
 BEGIN

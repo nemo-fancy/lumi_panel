@@ -31,16 +31,33 @@ func WriteJSON(w http.ResponseWriter, r *http.Request, status int, v any) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Referrer-Policy", "no-referrer")
+	setSafetyHeaders(w)
 	w.WriteHeader(status)
 	_, _ = w.Write(buf.Bytes())
 }
 
+// setSafetyHeaders applies the headers every API response carries.
+//
+// no-store is not optional. An authenticated body caches in an intermediary or
+// a CDN exactly as happily as a public one, and §6.8 already requires it on
+// subscription responses for the same reason. Referrer-Policy keeps a token in
+// a path from travelling to whatever the page links to next.
+func setSafetyHeaders(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("Content-Type", "application/json; charset=utf-8")
+	h.Set("Cache-Control", "private, no-store")
+	h.Set("Referrer-Policy", "no-referrer")
+	h.Set("X-Content-Type-Options", "nosniff")
+}
+
 // writeError emits a minimal error envelope without going back through
 // WriteJSON, so a failure here cannot recurse.
+//
+// It carries the same headers as a success. This is the response that fires
+// when a credential nearly leaked, so it must not be the least protected one
+// the package emits.
 func writeError(w http.ResponseWriter, status int, code string) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	setSafetyHeaders(w)
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(`{"error":{"code":"` + code + `"}}`))
 }

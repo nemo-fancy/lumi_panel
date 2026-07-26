@@ -98,29 +98,108 @@ func TestPermanentPacksDrainLast(t *testing.T) {
 	}
 }
 
-// TestSortForDeductionIsTotal checks that equal keys still produce one stable
-// order. Attribution that reshuffles between restarts would make the same
-// traffic land on different subscriptions, which is indistinguishable from a
-// billing bug when a user disputes it.
+// TestSortForDeductionIsTotal checks that the order does not depend on the
+// order the input arrived in.
+//
+// Feeding the same permutation repeatedly only proves the sort is stable,
+// which sort.SliceStable guarantees for free -- it would pass with the
+// tiebreak deleted entirely. The rows come from a database query, so their
+// arrival order can differ between restarts; the output must not.
 func TestSortForDeductionIsTotal(t *testing.T) {
 	exp := ts("2026-08-01T00:00:00Z")
-	build := func() []SubQuota {
-		return []SubQuota{
-			{ID: 3, Kind: SubDataPack, TransferBytes: gb, ExpiredAt: ptr(exp)},
-			{ID: 1, Kind: SubDataPack, TransferBytes: gb, ExpiredAt: ptr(exp)},
-			{ID: 2, Kind: SubDataPack, TransferBytes: gb, ExpiredAt: ptr(exp)},
-		}
+	base := []SubQuota{
+		{ID: 3, Kind: SubDataPack, TransferBytes: gb, ExpiredAt: ptr(exp)},
+		{ID: 1, Kind: SubDataPack, TransferBytes: gb, ExpiredAt: ptr(exp)},
+		{ID: 2, Kind: SubDataPack, TransferBytes: gb, ExpiredAt: ptr(exp)},
+		{ID: 4, Kind: SubPrimary, TransferBytes: gb},
 	}
 
-	first := SortForDeduction(build())
-	for i := 0; i < 200; i++ {
-		got := SortForDeduction(build())
+	want := idsOf(SortForDeduction(append([]SubQuota(nil), base...)))
+
+	for _, perm := range permutations(base) {
+		got := idsOf(SortForDeduction(perm))
 		for j := range got {
-			if got[j].ID != first[j].ID {
-				t.Fatalf("iteration %d diverged at %d: %d vs %d", i, j, got[j].ID, first[j].ID)
+			if got[j] != want[j] {
+				t.Fatalf("input order changed the result: got %v, want %v", got, want)
 			}
 		}
 	}
+}
+
+// TestSortForDeductionHandlesUnknownKinds keeps the comparator a strict weak
+// ordering even if a value outside the two known kinds reaches it. Comparing
+// kinds for inequality alone leaves an unknown kind equivalent to both known
+// ones while they are unequal to each other, which breaks transitivity and
+// lets sort return an arbitrary permutation.
+func TestSortForDeductionHandlesUnknownKinds(t *testing.T) {
+	base := []SubQuota{
+		{ID: 3, Kind: SubKind("weird"), TransferBytes: gb},
+		{ID: 1, Kind: SubPrimary, TransferBytes: gb},
+		{ID: 2, Kind: SubKind("weird"), TransferBytes: gb},
+		{ID: 4, Kind: SubPrimary, TransferBytes: gb},
+	}
+
+	want := []int64{1, 4, 2, 3}
+	for _, perm := range permutations(base) {
+		got := idsOf(SortForDeduction(perm))
+		for j := range got {
+			if got[j] != want[j] {
+				t.Fatalf("got %v, want %v (known kinds first, then unknown, each by ID)", got, want)
+			}
+		}
+	}
+}
+
+// TestAttributeMergesDuplicateIDs guards the ledger write. Two rows sharing a
+// subscription ID collide on uq_ledger, and PostgreSQL refuses an ON CONFLICT
+// DO UPDATE that would touch the same row twice -- so the flush batch aborts,
+// retries, and aborts again, wedging the Flusher on a batch it can never land.
+func TestAttributeMergesDuplicateIDs(t *testing.T) {
+	now := ts("2026-07-26T12:00:00Z")
+	subs := []SubQuota{
+		{ID: 10, Kind: SubDataPack, TransferBytes: 5},
+		{ID: 10, Kind: SubDataPack, TransferBytes: 5},
+	}
+
+	rows := Attribute(8, subs, now)
+
+	seen := map[int64]bool{}
+	var total int64
+	for _, r := range rows {
+		if seen[r.SubscriptionID] {
+			t.Errorf("subscription %d appears twice: %+v", r.SubscriptionID, rows)
+		}
+		seen[r.SubscriptionID] = true
+		total += r.Billed
+	}
+	if total != 8 {
+		t.Errorf("attributed %d, want 8", total)
+	}
+}
+
+func idsOf(subs []SubQuota) []int64 {
+	ids := make([]int64, len(subs))
+	for i, s := range subs {
+		ids[i] = s.ID
+	}
+	return ids
+}
+
+// permutations returns every ordering of subs, each in a fresh slice.
+func permutations(subs []SubQuota) [][]SubQuota {
+	if len(subs) <= 1 {
+		return [][]SubQuota{append([]SubQuota(nil), subs...)}
+	}
+	var out [][]SubQuota
+	for i := range subs {
+		rest := make([]SubQuota, 0, len(subs)-1)
+		rest = append(rest, subs[:i]...)
+		rest = append(rest, subs[i+1:]...)
+		for _, p := range permutations(rest) {
+			out = append(out, append([]SubQuota{subs[i]}, p...))
+		}
+	}
+	return out
 }
 
 func TestAttributeAllOverflow(t *testing.T) {

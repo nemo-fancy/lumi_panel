@@ -63,8 +63,23 @@ func Transition(from, to OrderStatus) error {
 	return nil
 }
 
+// IsKnown reports whether s is a state this machine models.
+func IsKnown(s OrderStatus) bool {
+	_, ok := orderTransitions[s]
+	return ok
+}
+
 // IsTerminal reports whether an order can no longer change state.
-func IsTerminal(s OrderStatus) bool { return len(orderTransitions[s]) == 0 }
+//
+// An unmodelled status is not terminal. Reading the transition map alone would
+// make it so -- a missing key yields a nil slice of length zero -- which
+// inverts the default-deny intent: a status added to the database CHECK
+// without being wired up here would silently become an end state that no
+// transition can leave, rather than an error somebody notices.
+func IsTerminal(s OrderStatus) bool {
+	edges, ok := orderTransitions[s]
+	return ok && len(edges) == 0
+}
 
 // IsPaid reports whether the money has arrived, regardless of whether
 // provisioning has caught up.

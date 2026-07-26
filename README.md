@@ -44,13 +44,16 @@ Implemented and tested:
 | `internal/metering` | The Flusher's in-memory quota ladder |
 | `internal/events` | Event bus and subscriber registry |
 | `internal/platform/secret` | The credential type that refuses to serialize |
+| `internal/platform/httpx` | The buffer-then-write JSON response writer |
 | `migrations/` | Full schema for the core and business tables |
 
-Not started: HTTP layer, store layer, node plane, renderers, frontend,
-importers. Anything touching the database or Redis needs integration
+Not started: routing and handlers, store layer, node plane, renderers,
+frontend, importers. Anything touching the database or Redis needs integration
 infrastructure that has not been set up yet.
 
-`go test ./...` is green, including `-race`.
+`go test ./...` is green, including `-race`. `make schema` applies the
+migrations to a scratch PostgreSQL 16 and asserts the behaviour the
+constraints encode; CI runs it as its own job.
 
 ## Building
 
@@ -83,7 +86,14 @@ the ledger's uniqueness constraint unenforceable. `domain.Attribute`.
 **User-Agent matching is an ordered slice, not a map.** Go randomises map
 iteration, and `Clash Verge Rev` matches both `clash` and `clash-verge`, so a
 map hands the same user a different format on each refresh.
-`subplane.DetectUA`, with 68 fixtures in `testdata/ua/`.
+`subplane.DetectUA`, with 77 fixtures in `testdata/ua/`.
+
+**Protocol support is gated on the core version, not just the client family.**
+sing-box gained AnyTLS in 1.12 and mihomo around 1.19, so "it is a sing-box
+client" is not grounds to send it an AnyTLS node. A client whose User-Agent
+carries no core version — every wrapper application, and every explicitly
+requested profile — is refused the version-gated protocols rather than assumed
+current. `subplane.Supports`.
 
 **The render entry point cannot see a user ID.** Node visibility is decided
 entirely by permission group. A user-level filter would make every group-keyed
@@ -92,15 +102,28 @@ cache either useless or capable of serving one user another user's nodes.
 
 **Credentials cannot be serialized into a response.** `secret.Secret` fails to
 marshal rather than redacting, so a leak is a failed request instead of a quiet
-disclosure. A test walks the response-building packages to make sure nothing
-unwraps one.
+disclosure. It stores the value behind a pointer so `%+v` on a struct with an
+unexported credential field cannot print it, implements `fmt.Formatter` so no
+verb falls through to the raw value, and exposes no exported accessor — the
+unwrapping function is `secret.Disclose`, at package level, precisely so a
+database-stored template cannot reach it by reflection.
+
+A test parses every Go file in the module and fails on a `secret.Disclose`
+call outside the allowlisted out-of-band senders. It is an AST walk rather
+than a grep because the grep it replaced split lines on `//` to skip comments,
+which also blinded it to any line containing a URL — that is, to the magic
+login link it existed to catch.
 
 ## Open decisions
 
 [`docs/decisions/C-1-relay-chain.md`](docs/decisions/C-1-relay-chain.md) —
-relay chain model and billing basis. **Awaiting sign-off.** The schema already
-follows the proposal; reversing it is cheap now and expensive after the
-metering core lands.
+relay chain model and billing basis. **Awaiting sign-off.** The schema carries
+the columns the proposal calls for (`nodes.role`, `node_relay_hops`), but the
+enforcement it depends on — ingest rejecting a report from a non-entry node,
+and invariant I9 — lands with the node plane and the invariant checker. Until
+then `role` defaults to `entry` and nothing stops the double-billing
+configuration the decision describes. Reversing the schema is cheap now and
+expensive after the metering core lands.
 
 Appendix C of the design document lists five more (C-2 through C-6) that do not
 block the schema.

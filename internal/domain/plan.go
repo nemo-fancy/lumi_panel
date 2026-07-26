@@ -22,13 +22,31 @@ const (
 	ChangeDeny ChangePolicy = "deny"
 )
 
-// ErrChangeDenied reports a plan change refused by a deny-policy plan that has
-// not expired yet.
-var ErrChangeDenied = errors.New("domain: plan change denied until current plan expires")
+var (
+	// ErrChangeDenied reports a plan change refused by a deny-policy plan that
+	// has not expired yet.
+	ErrChangeDenied = errors.New("domain: plan change denied until current plan expires")
 
-// PlanSnapshot is the subset of a plan needed to price a change. It is a
-// snapshot because prices move, and a change must be priced against what the
-// user actually bought.
+	// ErrProratePermanent reports proration attempted against a subscription
+	// that never expires. There is no remaining-days figure to prorate
+	// against, and treating the missing expiry as "already expired" would
+	// silently zero the allowance.
+	ErrProratePermanent = errors.New("domain: cannot prorate a subscription with no expiry")
+
+	// ErrBadPeriod reports a non-positive plan period.
+	ErrBadPeriod = errors.New("domain: plan period must be positive")
+
+	// ErrUnknownPolicy reports an unrecognised change policy.
+	ErrUnknownPolicy = errors.New("domain: unknown change policy")
+)
+
+// PlanSnapshot is the subset of a plan needed to price a change.
+//
+// It is a snapshot because prices move and a change must be priced against
+// what was actually bought. PeriodDays is resolved from the period the user
+// selected, not stored on the plan: one plan sells monthly and yearly prices
+// out of the same row, so a single period length on the plan cannot describe
+// either purchase. See PeriodDays.
 type PlanSnapshot struct {
 	ID            int64
 	TransferBytes int64
@@ -36,14 +54,27 @@ type PlanSnapshot struct {
 	Price         Money // price for one whole period
 }
 
+// LiveSubscription is the state of the subscription being changed.
+//
+// Distinct from PlanSnapshot, and the distinction is load-bearing: stacking
+// adds to what the subscription currently holds, which after an earlier stack
+// is no longer what any plan says. Pricing against the plan's allowance would
+// quietly discard everything accumulated since.
+type LiveSubscription struct {
+	TransferBytes int64
+	UsedBytes     int64
+	// ExpiredAt nil means the subscription never expires.
+	ExpiredAt *time.Time
+}
+
 // ChangeRequest describes a requested move from a live subscription to a new
 // plan.
 type ChangeRequest struct {
-	Policy       ChangePolicy
-	Old          PlanSnapshot
-	New          PlanSnapshot
-	OldExpiredAt time.Time
-	At           time.Time
+	Policy  ChangePolicy
+	Old     PlanSnapshot
+	New     PlanSnapshot
+	Current LiveSubscription
+	At      time.Time
 	// Loc is the operator's billing timezone. Nil is treated as UTC.
 	Loc *time.Location
 }
@@ -71,11 +102,17 @@ const (
 
 // ChangeOutcome is the decision, not the execution. The service layer applies
 // it; keeping the arithmetic here means it can be tested without a database.
+//
+// Every field is stated absolutely rather than as a delta, including the ones
+// a given mode does not move. "Leave this one alone" is not expressible, which
+// means it cannot be assumed by mistake: an extend that means to preserve the
+// counter says so by carrying the counter's current value.
 type ChangeOutcome struct {
-	Mode          ChangeMode
-	ExpiredAt     time.Time
+	Mode ChangeMode
+	// ExpiredAt nil means the resulting subscription never expires.
+	ExpiredAt     *time.Time
 	TransferBytes int64
-	// UsedBytes is the counter the resulting subscription starts from.
+	// UsedBytes is the counter the resulting subscription ends up with.
 	UsedBytes int64
 	// Charge is what the user owes, never negative.
 	Charge Money
@@ -86,22 +123,34 @@ type ChangeOutcome struct {
 	Credit Money
 }
 
-// RemainingDays counts whole days from at until expiry, measured against local
-// day boundaries in loc.
+// RemainingDays counts whole calendar days from at until expiry, measured
+// against local day boundaries in loc.
 //
 // Whole days rather than seconds, deliberately. Second-level proration
 // produces amounts a user cannot reproduce by hand, and every one of those
-// becomes a ticket. Nil loc is treated as UTC.
+// becomes a ticket.
+//
+// The count is taken between calendar dates, not as a duration between the two
+// local midnights. Across a spring-forward those midnights are 23 hours apart,
+// and dividing a duration by 24 hours loses the day -- so a user changing plan
+// over a DST boundary would be charged for six days while holding the plan for
+// seven. The error runs one way only, against the user, and reduces the credit
+// on a downgrade too.
+//
+// Nil loc is treated as UTC.
 func RemainingDays(at, expiredAt time.Time, loc *time.Location) int {
 	if loc == nil {
 		loc = time.UTC
 	}
 	a := at.In(loc)
 	e := expiredAt.In(loc)
-	aMid := time.Date(a.Year(), a.Month(), a.Day(), 0, 0, 0, 0, loc)
-	eMid := time.Date(e.Year(), e.Month(), e.Day(), 0, 0, 0, 0, loc)
 
-	days := int(eMid.Sub(aMid).Hours() / 24)
+	// Rebuilding both dates in UTC turns the comparison into pure calendar
+	// arithmetic, with no offset transition in between to absorb an hour.
+	aDay := time.Date(a.Year(), a.Month(), a.Day(), 0, 0, 0, 0, time.UTC)
+	eDay := time.Date(e.Year(), e.Month(), e.Day(), 0, 0, 0, 0, time.UTC)
+
+	days := int(eDay.Sub(aDay) / (24 * time.Hour))
 	if days < 0 {
 		return 0
 	}
@@ -115,8 +164,8 @@ func RemainingDays(at, expiredAt time.Time, loc *time.Location) int {
 // traffic (§7.5), so the two never disagree about which direction "in the
 // user's favour" points.
 func ApplyChange(req ChangeRequest) (ChangeOutcome, error) {
-	if req.New.PeriodDays <= 0 || req.Old.PeriodDays <= 0 {
-		return ChangeOutcome{}, errors.New("domain: plan period must be positive")
+	if req.New.PeriodDays <= 0 {
+		return ChangeOutcome{}, ErrBadPeriod
 	}
 	loc := req.Loc
 	if loc == nil {
@@ -125,44 +174,69 @@ func ApplyChange(req ChangeRequest) (ChangeOutcome, error) {
 
 	switch req.Policy {
 	case ChangeDeny:
-		if req.OldExpiredAt.After(req.At) {
+		// A subscription with no expiry never reaches the point where a deny
+		// policy would allow a change. Reading a missing expiry as "expired
+		// long ago" would invert the policy completely.
+		if req.Current.ExpiredAt == nil || req.Current.ExpiredAt.After(req.At) {
 			return ChangeOutcome{}, ErrChangeDenied
 		}
 		fallthrough
 
 	case ChangeReset:
+		expiry := req.At.AddDate(0, 0, req.New.PeriodDays)
 		return ChangeOutcome{
 			Mode:          ModeReplace,
-			ExpiredAt:     req.At.AddDate(0, 0, req.New.PeriodDays),
+			ExpiredAt:     &expiry,
 			TransferBytes: req.New.TransferBytes,
 			UsedBytes:     0,
 			Charge:        req.New.Price,
 		}, nil
 
 	case ChangeStack:
-		base := req.OldExpiredAt
-		if base.Before(req.At) {
-			base = req.At
+		out := ChangeOutcome{
+			Mode: ModeExtend,
+			// Stacking adds allowance to what the subscription holds now.
+			// Taking it from the plan instead would discard everything a
+			// previous stack accumulated.
+			TransferBytes: req.Current.TransferBytes + req.New.TransferBytes,
+			// The counter carries over. Stacking grants more allowance; it
+			// does not forgive what has already been spent this period.
+			UsedBytes: req.Current.UsedBytes,
+			Charge:    req.New.Price,
 		}
-		return ChangeOutcome{
-			Mode:      ModeExtend,
-			ExpiredAt: base.AddDate(0, 0, req.New.PeriodDays),
-			// Extend keeps the existing counter: stacking adds allowance, it
-			// does not forgive what has already been spent.
-			TransferBytes: req.New.TransferBytes,
-			Charge:        req.New.Price,
-		}, nil
+
+		// Stacking onto a subscription that never expires keeps it that way.
+		if req.Current.ExpiredAt != nil {
+			base := *req.Current.ExpiredAt
+			if base.Before(req.At) {
+				// Renewing after a lapse measures from now. Extending from the
+				// stale expiry would hand back a subscription that is already
+				// over.
+				base = req.At
+			}
+			expiry := base.AddDate(0, 0, req.New.PeriodDays)
+			out.ExpiredAt = &expiry
+		}
+		return out, nil
 
 	case ChangeProrate:
-		remaining := RemainingDays(req.At, req.OldExpiredAt, loc)
+		if req.Current.ExpiredAt == nil {
+			return ChangeOutcome{}, ErrProratePermanent
+		}
+		if req.Old.PeriodDays <= 0 {
+			return ChangeOutcome{}, ErrBadPeriod
+		}
+
+		remaining := RemainingDays(req.At, *req.Current.ExpiredAt, loc)
 
 		gained := floorDiv(int64(req.New.Price)*int64(remaining), int64(req.New.PeriodDays))
 		surrendered := ceilDiv(int64(req.Old.Price)*int64(remaining), int64(req.Old.PeriodDays))
 		diff := Money(gained - surrendered)
 
+		expiry := *req.Current.ExpiredAt
 		out := ChangeOutcome{
 			Mode:      ModeReplace,
-			ExpiredAt: req.OldExpiredAt,
+			ExpiredAt: &expiry,
 			// The allowance is prorated to the days that remain, and the
 			// counter restarts. Whether a prorated change should also forgive
 			// traffic already spent is a billing-terms question, not an
@@ -179,7 +253,7 @@ func ApplyChange(req ChangeRequest) (ChangeOutcome, error) {
 		return out, nil
 
 	default:
-		return ChangeOutcome{}, errors.New("domain: unknown change policy " + string(req.Policy))
+		return ChangeOutcome{}, ErrUnknownPolicy
 	}
 }
 

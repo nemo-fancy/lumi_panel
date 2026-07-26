@@ -79,9 +79,15 @@ CREATE TABLE plans (
     kind            TEXT NOT NULL CHECK (kind IN ('primary','data_pack')),
     group_ids       BIGINT[] NOT NULL DEFAULT '{}',
     transfer_bytes  BIGINT NOT NULL CHECK (transfer_bytes >= 0),
-    period_days     INTEGER NOT NULL CHECK (period_days > 0),
     speed_limit     INTEGER,
     device_limit    SMALLINT,
+    -- Keyed by billing period: {"month": 990, "year": 9900}, in the smallest
+    -- currency unit.
+    --
+    -- There is deliberately no period_days column beside it. One plan row
+    -- sells several periods, so a single length cannot describe either
+    -- purchase; the length belongs to the order and is resolved from the
+    -- chosen key by domain.PeriodDays.
     prices          JSONB NOT NULL,
     reset_policy    TEXT NOT NULL CHECK (reset_policy IN ('monthly_1st','monthly_signup','never')),
     change_policy   TEXT NOT NULL DEFAULT 'prorate'

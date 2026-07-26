@@ -107,3 +107,24 @@ func asIllegal(err error, target *ErrIllegalTransition) bool {
 	}
 	return ok
 }
+
+// TestUnknownStatusIsNotTerminal covers the default-deny intent. Reading the
+// transition map alone makes an unmodelled status terminal, because a missing
+// key yields a nil slice -- so a status added to the database CHECK without
+// being wired up here would silently become an end state nobody can leave.
+func TestUnknownStatusIsNotTerminal(t *testing.T) {
+	for _, s := range []OrderStatus{"", "disputed", "chargeback", "PENDING"} {
+		if IsKnown(s) {
+			t.Errorf("IsKnown(%q) = true, want false", s)
+		}
+		if IsTerminal(s) {
+			t.Errorf("IsTerminal(%q) = true; an unmodelled status must not read as an end state", s)
+		}
+	}
+
+	for _, s := range []OrderStatus{OrderPending, OrderPaid, OrderCompleted, OrderProvisioningFailed, OrderCancelled, OrderRefunded} {
+		if !IsKnown(s) {
+			t.Errorf("IsKnown(%s) = false", s)
+		}
+	}
+}
